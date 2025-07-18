@@ -1,10 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:http/http.dart' as http;
+import 'package:onnxruntime/onnxruntime.dart';
 import 'package:wear_os/globals.dart' as globals;
 import 'package:wear_os/networkService.dart' as flask;
 import 'package:wear_os/util/loggingclient.dart';
@@ -189,6 +193,10 @@ class _RecogState extends State<Recog> {
             setState(()=> lengthleft = 0);
             print("👍👍Buffer filled");
             startPredicting(InputWindow);
+            
+            _runInference(InputWindow!);
+
+
             print("Got  prediction❤️‍🔥");
             
             InputWindow?.clear();
@@ -217,6 +225,25 @@ class _RecogState extends State<Recog> {
     esenseQueue.removeWhere((d) => d.ts.isBefore(cutoff));
   }
 
+  Future<void> _runInference(List<List<double>> batch) async {
+  print("🚀 _runInference started");
+
+  try {
+    // if you have any prep (e.g. startPredicting), do it here
+    
+    print("   • startPredicting done, now awaiting runWithSummaries…");
+
+    final prediction = await printModelLabel(_session, batch);
+
+    // use debugPrint for very long lists so they're not truncated
+  } catch (e, st) {
+    print("❌ _runInference error: $e\n$st");
+  } finally {
+    print("✅ _runInference finished");
+  }
+}
+
+
   List<dynamic> alignedRow = [];
 
   void _flushAlignedBuffer() {
@@ -232,6 +259,122 @@ class _RecogState extends State<Recog> {
       
     }
   }
+
+  late final OrtSession _session;
+
+  bool _modelLoaded = false;
+
+Future<void> _loadModel() async {
+    // 1. Init the runtime (once)
+    OrtEnv.instance.init();
+
+    // 2. Load the bytes from assets
+    final raw = await rootBundle.load('assets/xgb_model.onnx');
+    final bytes = raw.buffer.asUint8List();
+
+    // 3. Create the session
+    final opts = OrtSessionOptions();
+    _session = OrtSession.fromBuffer(bytes, opts);
+    _modelLoaded = true;
+
+    print("Model loaded");
+  }
+
+  void dispose(){
+    OrtEnv.instance.release();
+    super.dispose();
+
+  }
+
+  List<double> _computeFeatureSummaries(List<List<double>> data) {
+  final int n = data.length;
+  if (n == 0) return [];
+  final int d = data[0].length;
+  if (d != 12) {
+    throw ArgumentError('Expected 12 features per row, got $d');
+  }
+
+  final List<double> flat = [];
+  for (var j = 0; j < d; j++) {
+    // extract column j
+    final col = <double>[for (var row in data) row[j]];
+    // mean
+    final mean = col.reduce((a, b) => a + b) / n;
+    // std (sample)
+    final varSum = col.map((x) => (x - mean) * (x - mean)).reduce((a, b) => a + b);
+    final std = sqrt(varSum / (n - 1));
+    // min & max
+    final minVal = col.reduce(min);
+    final maxVal = col.reduce(max);
+    // median
+    col.sort();
+    final median = (n % 2 == 1)
+        ? col[n ~/ 2]
+        : (col[(n ~/ 2) - 1] + col[n ~/ 2]) / 2;
+
+    flat.addAll([mean, std, minVal, maxVal, median]);
+  }
+  return flat; // length == 12 * 5 = 60
+}
+
+
+
+Future<void> printModelLabel(
+  OrtSession session,
+  List<List<double>> data50x12,
+) async {
+  // 1) Summarize → flat 60-vector
+  final input60 = _computeFeatureSummaries(data50x12);
+
+  // 2) Build a float32 tensor [1,60]
+  final floatInput = Float32List.fromList(input60);
+  final tensor = OrtValueTensor.createTensorWithDataList(
+    floatInput,
+    [1, input60.length],
+  );
+
+  // 3) Run synchronously to avoid async hangs
+  final outputs = session.run(
+    OrtRunOptions(),
+    { session.inputNames.first: tensor },
+  );
+
+  // 4) The first output is the predicted label (int64)
+  final OrtValue? labelOrt = outputs.first;
+  if (labelOrt == null) {
+    print('❌ No output from model');
+  } else {
+    final raw = labelOrt.value;
+    int label;
+    if (raw is Int64List) {
+      label = raw[0];
+    } else if (raw is List) {
+      // sometimes comes back as List<dynamic>
+      label = (raw as List).cast<int>()[0];
+    } else {
+      throw StateError('Unexpected label data type: ${raw.runtimeType}');
+    }
+    setState(() {
+      
+      predictedLabel = Activity_classes[label];
+      nativeAttentionStatus = LABEL_TO_ATTENTION[label];
+    });
+    print('🏷️  Predicted label: $label');
+  }
+
+  // 5) Clean up all native buffers
+  tensor.release();
+  for (final v in outputs) {
+    v?.release();
+  }
+}
+
+//NATIVE VARIABLES
+
+String? predictedLabel;
+String? nativeAttentionStatus;
+
+
 
   List<List<double>>? InputWindow = [];
   List<List<double>>? Input1 = [];
@@ -257,9 +400,15 @@ List<String> Activity_classes = [
    "Scrolling on Phone",
 ];
 
+Map<int, String>  LABEL_TO_ATTENTION = {
+    0: "attentive", 1: "attentive", 2: "attentive", 3: "attentive",
+    4: "attentive", 5: "attentive", 6: "attentive",
+    7: "distracted", 8: "distracted", 9: "distracted", 10: "distracted", 11: "distracted"
+};
+
 String predictedActivity = "Null";
 int maxidx = 0;
-int max = 0;
+int _max = 0;
 String? _attentionStatus;
 
   void startPredicting(List<List<double>>? InputWindow) async {
@@ -317,7 +466,8 @@ AndroidDeviceInfo? info;
   }
 
   void initAsync() async{
-devicePlugin = await  DeviceInfoPlugin();
+    _loadModel();
+    devicePlugin = await  DeviceInfoPlugin();
 info = await devicePlugin?.androidInfo;
 globals.Model = info!.model;
   }
@@ -337,6 +487,8 @@ void onStopPredicting() async {
       predictedActivity = "null";
       _attentionStatus = null;
       _prediction = null;
+      nativeAttentionStatus = null;
+      predictedLabel = null;
       attentionPercent = null;
       bufferTimer?.cancel();
 
@@ -527,9 +679,14 @@ BuildContext context,
                 borderRadius:
                     BorderRadius.circular(12), // circular corners (12px radius)
               ),
-              child: Text(
-                'Predicted : ${"$predictedActivity" ?? "Nothing predicted"}',
-                style: TextStyle(color: Colors.purple),
+              child: Column(
+                children: [
+                  Text(
+                    'Predicted : ${"$predictedActivity" ?? "Nothing predicted"}',
+                    style: TextStyle(color: Colors.purple),
+                  ),
+                  Text("Predicted (native model) : ${predictedLabel} ")
+                ],
               ),
             ),
             SizedBox(height: 20,),
@@ -544,9 +701,14 @@ BuildContext context,
                 borderRadius:
                     BorderRadius.circular(12), // circular corners (12px radius)
               ),
-              child: Text(
-                'Attention State: ${"$_attentionStatus" ?? "Nothing predicted"}',
-                style: TextStyle(color: const Color.fromARGB(255, 39, 117, 176)),
+              child: Column(
+                children: [
+                  Text(
+                    'Attention State: ${"$_attentionStatus" ?? "Nothing predicted"}',
+                    style: TextStyle(color: const Color.fromARGB(255, 39, 117, 176)),
+                  ),
+                  Text("Native Attention Status : ${nativeAttentionStatus}")
+                ],
               ),
             ),
             SizedBox(height: 20,),

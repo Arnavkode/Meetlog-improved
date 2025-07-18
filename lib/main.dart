@@ -19,6 +19,7 @@ import 'package:wear_os/homescreen.dart';
 import 'package:wear_os/pongsense.dart';
 import 'globals.dart' as globals;
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:onnxruntime/onnxruntime.dart';
 
 late final bool isWear;
 
@@ -33,7 +34,7 @@ void main() async {
   // Open a box named 'myBox'
   await Hive.openBox('myBox');
   
-
+  print("Env initiated");
   isWear = (await IsWear().check()) ?? false;
 
   runApp(

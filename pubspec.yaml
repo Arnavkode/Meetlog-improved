@@ -63,6 +63,7 @@ dependencies:
   fluttertoast: ^8.2.12
   http: ^1.4.0
   device_info_plus: ^11.5.0
+  onnxruntime: ^1.4.1
 # dependency_overrides:
 #   audioplayers: ^3.0.1
 #   # audioplayers_android: ^3.0.1
@@ -93,6 +94,8 @@ flutter:
     - assets/img_act.png
     - assets/menhera-chan-chibi.gif
     - server/model_NEW.pt
+    - assets/xgb_model.onnx
+    - assets/xgb_model_prob.onnx
     
 #     - images/a_dot_ham.jpeg
 

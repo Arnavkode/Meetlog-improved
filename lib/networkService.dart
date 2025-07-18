@@ -13,7 +13,7 @@ class NetworkService {
   /// Sends a flat 600-length list and returns the prediction vector.
   Future<List<dynamic>> fetchPrediction(List<double> flatData, String model) async {
     
-    final uri = Uri.parse("$_baseUrl/predict");
+    final uri = Uri.parse("$_baseUrl/attention");
     final resp = await client.post(
   uri,
   headers: {
