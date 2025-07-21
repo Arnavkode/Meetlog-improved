@@ -12,7 +12,6 @@ import 'package:rxdart/rxdart.dart';
 import 'package:watch_connectivity/watch_connectivity.dart';
 import 'package:wear_os/globals.dart' as globals;
 import 'package:intl/intl.dart';
-import 'networkService.dart' as flask;
 
 // CLASS FOR A WRAPPED ESENSE/WATCH DATA POINT
 
