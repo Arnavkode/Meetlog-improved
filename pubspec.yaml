@@ -93,6 +93,7 @@ flutter:
     - assets/img_act.png
     - assets/menhera-chan-chibi.gif
     - server/model_NEW.pt
+    - assets/xgb_model_prob.onnx
     
 #     - images/a_dot_ham.jpeg
 
