@@ -405,7 +405,7 @@ class _RecogState extends State<Recog> {
 
         try {
           final resp = await client.post(
-            Uri.parse("http://10.6.0.56:5500/attention"),
+            Uri.parse("http://10.6.0.56:8888/attention"),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
               'user_id': globals.Model,
@@ -422,7 +422,7 @@ class _RecogState extends State<Recog> {
         try {
     // 1) No body at all → sends Content-Length: 0
     final resp = await client.post(
-            Uri.parse("http://10.6.0.56:5500/attention_poke"),
+            Uri.parse("http://10.6.0.56:8888/attention_poke"),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
               'user_id': globals.Model,
@@ -537,7 +537,7 @@ class _RecogState extends State<Recog> {
     bufferTimer?.cancel();
 
     final resp = await client.post(
-      Uri.parse("http://10.6.0.56:5500/end_meeting"),
+      Uri.parse("http://10.6.0.56:8888/end_meeting"),
       headers: {
         'Content-Type': 'application/json',
         'Cache-Control': 'no-cache',
@@ -547,6 +547,9 @@ class _RecogState extends State<Recog> {
     );
     final response = jsonDecode(resp.body);
     print("⬇️⬇️⬇️⬇️ $response['attentive_percent']");
+    String base64string = response['graph'].split(',').last;
+    Uint8List Imagebytes = base64Decode(base64string);
+
     setState(() {
       attentionPercent = response['attentive_percent'];
     });
@@ -555,7 +558,7 @@ class _RecogState extends State<Recog> {
     Fluttertoast.showToast(msg: "Predicting stopped");
 
     if (response != null) {
-      showSuggestion(context, response["suggestion"]);
+      showSuggestion(context, response["suggestion"], Imagebytes);
     }
   }
 
@@ -575,6 +578,19 @@ class _RecogState extends State<Recog> {
     print("BUFFERS TO BE STARTED BEING FILLED");
     predictedProbabilities = null;
     initIMU();
+    try {
+          final resp = await client.post(
+            Uri.parse("http://10.6.0.56:8888/start_meeting"),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'user_id': globals.Model
+            }),
+          );
+          print("[SENT] ${nativeAttentionStatus} → ${resp.statusCode}");
+        } catch (e, st) {
+          print("❌ post failed: $e\n$st");
+        }
+
   }
 
   void initIMU() {
@@ -603,6 +619,7 @@ class _RecogState extends State<Recog> {
   Future<void> showSuggestion(
     BuildContext context,
     String message,
+    Uint8List ImageBytes
   ) {
     return showGeneralDialog<void>(
       context: context,
@@ -665,12 +682,19 @@ class _RecogState extends State<Recog> {
                   Expanded(
                     child: SingleChildScrollView(
                       padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: Text(
-                        "Suggestion: $message",
-                        style: const TextStyle(fontSize: 15),
+                      child: Column(
+                        children: [
+                          Text(
+                            "Suggestion: $message",
+                            style: const TextStyle(fontSize: 15),
+                          ),
+                          SizedBox(height: 8,),
+                          Image.memory(ImageBytes, fit: BoxFit.contain,)
+                        ],
                       ),
                     ),
                   ),
+                  
 
                   const SizedBox(height: 16),
 

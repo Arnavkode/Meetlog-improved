@@ -697,18 +697,16 @@ packages:
   watch_connectivity:
     dependency: "direct main"
     description:
-      name: watch_connectivity
-      sha256: "884db309fef69711076e1d080a1d8e1e2112e8a48ff0375798d69be30a035de2"
-      url: "https://pub.dev"
-    source: hosted
+      path: "packages/watch_connectivity"
+      relative: true
+    source: path
     version: "0.2.1+1"
   watch_connectivity_platform_interface:
     dependency: transitive
     description:
-      name: watch_connectivity_platform_interface
-      sha256: "82e8f165eac779d71bff7f6269a8be530798311cf7f3c33f1594d93468747d11"
-      url: "https://pub.dev"
-    source: hosted
+      path: "packages/watch_connectivity_platform_interface"
+      relative: true
+    source: path
     version: "0.2.0"
   wear:
     dependency: "direct main"
