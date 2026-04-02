@@ -19,6 +19,7 @@ import 'package:wear_os/homescreen.dart';
 import 'package:wear_os/pongsense.dart';
 import 'globals.dart' as globals;
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:onnxruntime/onnxruntime.dart';
 
 late final bool isWear;
 
@@ -33,7 +34,7 @@ void main() async {
   // Open a box named 'myBox'
   await Hive.openBox('myBox');
   
-
+  print("Env initiated");
   isWear = (await IsWear().check()) ?? false;
 
   runApp(
@@ -70,12 +71,7 @@ class _MyAppState extends State<MyApp> with AutomaticKeepAliveClientMixin{
   var _supported = false;
   var _paired = false;
   var _reachable = false;
-  final _log = <String>[];
 
-  AccelerometerEvent? _accelerometerEvent;
-  GyroscopeEvent? _gyroscopeEvent;
-  StreamSubscription<AccelerometerEvent>? _accelerometerStream;
-  StreamSubscription<GyroscopeEvent>? _gyroscopeStream;
 
   Map<String, dynamic> _latestWatchData = {};
 
@@ -107,23 +103,11 @@ class _MyAppState extends State<MyApp> with AutomaticKeepAliveClientMixin{
         globals.currentData = row;
         globals.datalist.add(row);
         globals.times.add(DateTime.now().millisecondsSinceEpoch);
-        _log.add('Received from watch: $event');
         globals.globalupdateWatchData(event);
       });
     });
 
     // Start collecting phone IMU data
-    _accelerometerStream = accelerometerEvents.listen((event) {
-      setState(() {
-        _accelerometerEvent = event;
-      });
-    });
-
-    _gyroscopeStream = gyroscopeEvents.listen((event) {
-      setState(() {
-        _gyroscopeEvent = event;
-      });
-    });
 
     initPlatformState();
   }
@@ -131,8 +115,7 @@ class _MyAppState extends State<MyApp> with AutomaticKeepAliveClientMixin{
 
   @override
   void dispose() {
-    _accelerometerStream?.cancel();
-    _gyroscopeStream?.cancel();
+   
     super.dispose();
   }
 
@@ -240,16 +223,7 @@ class _MyAppState extends State<MyApp> with AutomaticKeepAliveClientMixin{
                 ListTile(leading: _reachable ? YesIcon : NoIcon, title: const Text('Reachable')),
                 const Divider(),
 
-                SingleChildScrollView(
-                  child: Column(
-                    children: [
-                      const Text('📲 Phone IMU Data'),
-                      Text('Accelerometer: $_accelerometerEvent'),
-                      Text('Gyroscope: $_gyroscopeEvent'),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 10),
+                
 
                 const Text('⌚ Latest Watch IMU Data'),
                 Text('Accelerometer: ${_latestWatchData['accelerometer']}'),
@@ -270,22 +244,11 @@ class _MyAppState extends State<MyApp> with AutomaticKeepAliveClientMixin{
                 ),
                 const SizedBox(height: 30),
 
-                TextButton(
-                  onPressed: () {
-                    setState(() => _log.clear());
-                  },
-                  child: const Text('Clear Log'),
-                ),
+               
                 const SizedBox(height: 15),
 
                 const Text('📜 Log'),
-                SizedBox(
-                  height: 200,
-                  child: ListView(
-                    shrinkWrap: true,
-                    children: _log.reversed.map((log) => Text(log)).toList(),
-                  ),
-                ),
+                
               ],
             ),
           ),
