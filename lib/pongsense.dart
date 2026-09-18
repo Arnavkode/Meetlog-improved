@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:wear_os/esense/device.dart';
-import 'package:wear_os/esense/device.dart';
 import 'package:wear_os/routes/calibration.dart';
 import 'package:wear_os/routes/connect.dart';
 import 'package:wear_os/globals/connection.dart' as g;
@@ -13,8 +12,42 @@ class PongSense extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
+    const bgColor = Color(0xFF0A0F1F);
+    const textColor = Colors.white;
+    const skyBlue = Color(0xFF5CA9FF);
+    final theme = ThemeData(
+      brightness: Brightness.dark,
+      scaffoldBackgroundColor: bgColor,
+      colorScheme: const ColorScheme.dark(
+        background: bgColor,
+        surface: bgColor,
+        primary: skyBlue,
+        secondary: skyBlue,
+      ),
+      textTheme: ThemeData.dark().textTheme.apply(
+            bodyColor: textColor,
+            displayColor: textColor,
+          ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          foregroundColor: textColor,
+          backgroundColor: Colors.black,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        ),
+      ),
+      bottomNavigationBarTheme: const BottomNavigationBarThemeData(
+        backgroundColor: Colors.transparent,
+        selectedItemColor: skyBlue,
+        unselectedItemColor: Colors.white70,
+        showUnselectedLabels: true,
+        type: BottomNavigationBarType.fixed,
+      ),
+      iconTheme: const IconThemeData(color: textColor),
+    );
+
+    return MaterialApp(
       title: 'Pongsense',
+      theme: theme,
       home: Navigation(),
     );
   }
@@ -63,26 +96,54 @@ class NavigationState extends State<Navigation> with AutomaticKeepAliveClientMix
   }
 
   Widget _bottomNavigationBar() {
-    return BottomNavigationBar(
-      type: BottomNavigationBarType.fixed,
-      items: [
-        const BottomNavigationBarItem(
-          icon: Icon(Icons.bluetooth_connected),
-          label: "Connect",
-        ),
-        BottomNavigationBarItem(
-          icon: Icon(
-            Icons.calculate,
-            color: _deviceState != DeviceState.initialized
-                ? Theme.of(context).disabledColor
-                : null,
+    final disabledColor = Theme.of(context).disabledColor;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      child: Container(
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [Color(0xFF10182B), Color(0xFF0C1224)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
           ),
-          label: "Calibrate",
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: Colors.white12),
+          boxShadow: const [
+            BoxShadow(
+                color: Colors.black45,
+                blurRadius: 24,
+                offset: Offset(0, 12),
+                spreadRadius: -12),
+            BoxShadow(
+                color: Color(0x445CA9FF),
+                blurRadius: 12,
+                offset: Offset(0, 8),
+                spreadRadius: -10),
+          ],
         ),
-
-      ],
-      onTap: _onTap,
-      currentIndex: _currentTabIndex,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(18),
+          child: BottomNavigationBar(
+            items: [
+              const BottomNavigationBarItem(
+                icon: Icon(Icons.bluetooth_connected),
+                label: "Connect",
+              ),
+              BottomNavigationBarItem(
+                icon: Icon(
+                  Icons.calculate,
+                  color: _deviceState != DeviceState.initialized
+                      ? disabledColor
+                      : null,
+                ),
+                label: "Calibrate",
+              ),
+            ],
+            onTap: _onTap,
+            currentIndex: _currentTabIndex,
+          ),
+        ),
+      ),
     );
   }
 
@@ -128,12 +189,19 @@ class NavigationState extends State<Navigation> with AutomaticKeepAliveClientMix
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    return Scaffold(
-      // appBar: AppBar(
-      //   title: Text(routeTitle),
-      // ),
-      body: route,
-      bottomNavigationBar: _bottomNavigationBar(),
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Color(0xFF0A0F1F), Color(0xFF0E1326)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      ),
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: route,
+        bottomNavigationBar: _bottomNavigationBar(),
+      ),
     );
   }
 

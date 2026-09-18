@@ -12,7 +12,6 @@ import 'package:rxdart/rxdart.dart';
 import 'package:watch_connectivity/watch_connectivity.dart';
 import 'package:wear_os/globals.dart' as globals;
 import 'package:intl/intl.dart';
-import 'networkService.dart' as flask;
 
 // CLASS FOR A WRAPPED ESENSE/WATCH DATA POINT
 
@@ -666,62 +665,200 @@ Future<void> initAsync() async {
   @override
   Widget build(BuildContext context) {
     super.build(context);
+    const bgColor = Color(0xFF0A0F1F);
+    const textColor = Colors.white;
+    const skyBlue = Color(0xFF5CA9FF);
+
     return Scaffold(
-      body: Center(
-        child: Column(
-          children: [
-            const SizedBox(height: 20),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Text('Use Filter'),
-                Switch(
-                  value: useFilter,
-                  onChanged: (val) => setState(() => useFilter = val),
+      backgroundColor: bgColor,
+      body: SafeArea(
+        child: CustomScrollView(
+          physics: const BouncingScrollPhysics(),
+          slivers: [
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: const [
+                        Icon(Icons.analytics_outlined, color: skyBlue, size: 28),
+                        SizedBox(width: 10),
+                        Text(
+                          'Prediction Panel',
+                          style: TextStyle(
+                            color: textColor,
+                            fontSize: 24,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.3,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 22),
+
+                    _PredictionCard(
+                      child: Row(
+                        children: [
+                          const Icon(Icons.tune, color: skyBlue),
+                          const SizedBox(width: 10),
+                          const Text('Filter', style: TextStyle(color: textColor, fontWeight: FontWeight.w600)),
+                          const Spacer(),
+                          Switch(
+                            activeColor: skyBlue,
+                            value: useFilter,
+                            onChanged: (val) => setState(() => useFilter = val),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _GradientButton(
+                            label: 'Start Recording',
+                            icon: Icons.play_arrow_rounded,
+                            onPressed: onStart,
+                            gradient: const [Color(0xFF69F079), Color(0xFF36C978)],
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _GradientButton(
+                            label: 'Stop Recording',
+                            icon: Icons.stop_rounded,
+                            onPressed: onStopRecording,
+                            gradient: const [Color(0xFFF06969), Color(0xFFC73636)],
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 16),
+                    _PredictionCard(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _metaRow('Directory', dir?.path ?? 'Loading...'),
+                          const SizedBox(height: 10),
+                          _metaRow('Watch Data', ShowWatch?.toString() ?? '--'),
+                          const SizedBox(height: 10),
+                          _metaRow('eSense Data', ShowEsense?.toString() ?? 'No data'),
+                          const SizedBox(height: 10),
+                          _metaRow('Latency Tolerance', '$kAlignmentThresholdMs ms'),
+                          const SizedBox(height: 10),
+                          _metaRow('Current Time', CurrentTime?.toIso8601String() ?? '--'),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
-                const Text('Don\'t Use Filter'),
-              ],
-            ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                ElevatedButton(
-                  onPressed: onStart,
-                  child: const Text('Start Recording',
-                      style: TextStyle(color: Colors.white)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color.fromARGB(255, 105, 240, 121),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(5)),
-                  ),
-                ),
-                const SizedBox(width: 20),
-                ElevatedButton(
-                  onPressed: onStopRecording,
-                  child: const Text('Stop Recording',
-                      style: TextStyle(color: Colors.white)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color.fromARGB(255, 240, 105, 105),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(5)),
-                  ),
-                ),
-              ],
-            ),
-            SizedBox(
-              height: 20,
-            ),
-           
-            const SizedBox(height: 20),
-            Text("Directory: ${dir?.path ?? 'Loading...'}"),
-            Text("Watch Data: ${ShowWatch.toString()}"),
-            Text("eSense Data: ${ShowEsense.toString() ?? 'No data'}"),
-            Text("Latency Tolerance: $kAlignmentThresholdMs"),
-            Text("Current Time: ${CurrentTime}"),
-            SizedBox(
-              height: 40,
+              ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _metaRow(String label, String value) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label,
+            style: const TextStyle(
+                color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          maxLines: 3,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+              color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+        ),
+      ],
+    );
+  }
+}
+
+class _PredictionCard extends StatelessWidget {
+  const _PredictionCard({Key? key, required this.child}) : super(key: key);
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF10182B), Color(0xFF0C1224)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white12),
+        boxShadow: const [
+          BoxShadow(color: Colors.black54, blurRadius: 24, offset: Offset(0, 16), spreadRadius: -14),
+          BoxShadow(color: Color(0x445CA9FF), blurRadius: 14, offset: Offset(0, 10), spreadRadius: -10),
+        ],
+      ),
+      child: child,
+    );
+  }
+}
+
+class _GradientButton extends StatelessWidget {
+  const _GradientButton(
+      {Key? key, required this.label, required this.icon, required this.onPressed, required this.gradient})
+      : super(key: key);
+
+  final String label;
+  final IconData icon;
+  final VoidCallback onPressed;
+  final List<Color> gradient;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 52,
+      child: ElevatedButton(
+        style: ElevatedButton.styleFrom(
+          padding: EdgeInsets.zero,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          elevation: 0,
+          backgroundColor: Colors.transparent,
+          shadowColor: Colors.transparent,
+        ),
+        onPressed: onPressed,
+        child: Ink(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: gradient,
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: const [
+              BoxShadow(color: Color(0x885CA9FF), blurRadius: 12, offset: Offset(0, 8), spreadRadius: -4),
+            ],
+          ),
+          child: Center(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, color: Colors.white, size: 20),
+                const SizedBox(width: 10),
+                Text(label,
+                    style: const TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.w700, letterSpacing: 0.3, fontSize: 15)),
+              ],
+            ),
+          ),
         ),
       ),
     );
