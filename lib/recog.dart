@@ -8,8 +8,8 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:fluttertoast/fluttertoast.dart';
-import 'package:http/http.dart' as http;
 import 'package:onnxruntime/onnxruntime.dart';
+import 'package:wear_os/config/app_env.dart';
 import 'package:wear_os/globals.dart' as globals;
 import 'package:wear_os/util/loggingclient.dart';
 
@@ -274,7 +274,10 @@ class _RecogState extends State<Recog> {
     print("Model loaded");
   }
 
+  @override
   void dispose() {
+    bufferTimer?.cancel();
+    _stopReportPolling(reason: 'widget dispose');
     OrtEnv.instance.release();
     super.dispose();
   }
@@ -405,7 +408,7 @@ class _RecogState extends State<Recog> {
 
         try {
           final resp = await client.post(
-            Uri.parse("http://10.6.0.56:8888/attention"),
+            AppEnv.attentionUri,
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
               'user_id': globals.Model,
@@ -422,7 +425,7 @@ class _RecogState extends State<Recog> {
         try {
     // 1) No body at all → sends Content-Length: 0
     final resp = await client.post(
-            Uri.parse("http://10.6.0.56:8888/attention_poke"),
+            AppEnv.attentionPokeUri,
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
               'user_id': globals.Model,
@@ -519,11 +522,27 @@ class _RecogState extends State<Recog> {
   }
 
   double? attentionPercent;
+  String? finalSuggestion;
+  Uint8List? finalReportGraphBytes;
+  DateTime? finalReportTimestamp;
+  bool isFinalReportLoading = false;
+  String? finalReportError;
+  int reportRefreshMinutes = 1;
+  Timer? reportRefreshTimer;
+  bool _isReportPollingActive = false;
+  bool _isReportRequestInFlight = false;
+  int _pollTickCounter = 0;
 
-  void onStopPredicting() async {
+  Future<void> onStopPredicting() async {
+    debugPrint(
+      '[POLL][STOP] Stop pressed at ${DateTime.now().toIso8601String()}.',
+    );
+    _stopReportPolling(reason: 'stop button pressed');
     setState(() {
       ShowEsense = null;
       ShowWatch = null;
+      isFinalReportLoading = true;
+      finalReportError = null;
     });
     if (InputWindow!.isNotEmpty) InputWindow!.clear();
     lengthleft = 0;
@@ -533,64 +552,306 @@ class _RecogState extends State<Recog> {
     nativeAttentionStatus = "null";
     oldnativeAttentionStatus = "null";
     predictedLabel = null;
-    attentionPercent = null;
     bufferTimer?.cancel();
 
-    final resp = await client.post(
-      Uri.parse("http://10.6.0.56:8888/end_meeting"),
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
+    await _fetchAndStoreFinalReport(source: 'stop-button-end-meeting', finalizeMeeting: true);
+    _stopReportPolling(reason: 'stop button safety guard');
+    Fluttertoast.showToast(msg: "Predicting stopped");
+  }
+
+  Future<int?> _askReportIntervalMinutes() async {
+    final controller = TextEditingController(text: reportRefreshMinutes.toString());
+    bool adjusted = false;
+    final selected = await showDialog<int>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setLocalState) {
+            final raw = controller.text.trim();
+            final parsed = double.tryParse(raw);
+            final preview = _sanitizeIntervalMinutes(raw);
+            final bool isInvalid = raw.isNotEmpty && parsed == null;
+            final bool isBelowMinimum = parsed != null && parsed < 1;
+            final bool hasDecimal = parsed != null && parsed != parsed.roundToDouble();
+
+            return AlertDialog(
+              title: const Text('Report refresh interval'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: controller,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    inputFormatters: [
+                      FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                    ],
+                    onChanged: (_) => setLocalState(() {}),
+                    decoration: const InputDecoration(
+                      labelText: 'Minutes',
+                      hintText: '1',
+                      helperText: 'Minimum 1 minute. Decimals are rounded.',
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    "Will use: $preview minute${preview == 1 ? '' : 's'}",
+                    style: const TextStyle(color: Colors.white70),
+                  ),
+                  if (isInvalid)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 6),
+                      child: Text(
+                        'Invalid value. Defaulting to 1 minute.',
+                        style: TextStyle(color: Color(0xFFFF9A9A), fontSize: 12),
+                      ),
+                    ),
+                  if (isBelowMinimum)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 6),
+                      child: Text(
+                        'Minimum allowed is 1 minute.',
+                        style: TextStyle(color: Color(0xFFFFC266), fontSize: 12),
+                      ),
+                    ),
+                  if (hasDecimal)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 6),
+                      child: Text(
+                        'Decimal input will be rounded to nearest minute.',
+                        style: TextStyle(color: Color(0xFFFFC266), fontSize: 12),
+                      ),
+                    ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    adjusted = _isInputAdjusted(controller.text, preview);
+                    Navigator.of(ctx).pop(preview);
+                  },
+                  child: const Text('Start'),
+                ),
+              ],
+            );
+          },
+        );
       },
-      body: jsonEncode({'user_id': globals.Model}),
     );
-    final response = jsonDecode(resp.body);
-    print("⬇️⬇️⬇️⬇️ $response['attentive_percent']");
-    String base64string = response['graph'].split(',').last;
-    Uint8List Imagebytes = base64Decode(base64string);
+
+    if (selected != null && adjusted) {
+      Fluttertoast.showToast(
+        msg: "Interval adjusted to $selected minute${selected == 1 ? '' : 's'} (minimum 1).",
+      );
+    }
+
+    return selected;
+  }
+
+  int _sanitizeIntervalMinutes(String raw) {
+    final parsed = double.tryParse(raw.trim()) ?? 1.0;
+    final rounded = parsed.round();
+    return rounded < 1 ? 1 : rounded;
+  }
+
+  bool _isInputAdjusted(String raw, int sanitized) {
+    final parsed = double.tryParse(raw.trim());
+    if (parsed == null) {
+      return true;
+    }
+    return parsed < 1 || parsed != parsed.roundToDouble() || sanitized != parsed.round();
+  }
+
+  void _startPeriodicFinalReportRefresh() {
+    _stopReportPolling(reason: 'restart');
+    _isReportPollingActive = true;
+    _pollTickCounter = 0;
+    debugPrint(
+      '[POLL][START] interval=${reportRefreshMinutes}m at ${DateTime.now().toIso8601String()}',
+    );
+    _pollFinalReportTick(source: 'initial-start');
+    reportRefreshTimer = Timer.periodic(
+      Duration(minutes: reportRefreshMinutes),
+      (timer) {
+        _pollFinalReportTick(source: 'timer-${timer.tick}');
+      },
+    );
+  }
+
+  void _stopReportPolling({required String reason}) {
+    if (reportRefreshTimer != null || _isReportPollingActive) {
+      debugPrint(
+        '[POLL][STOP] reason=$reason at ${DateTime.now().toIso8601String()}',
+      );
+    }
+    reportRefreshTimer?.cancel();
+    reportRefreshTimer = null;
+    _isReportPollingActive = false;
+  }
+
+  Future<void> _pollFinalReportTick({required String source}) async {
+    if (!_isReportPollingActive) {
+      debugPrint('[POLL][SKIP][$source] inactive');
+      return;
+    }
+    if (!isPredicting) {
+      debugPrint('[POLL][SKIP][$source] isPredicting=false');
+      return;
+    }
+    if (_isReportRequestInFlight) {
+      debugPrint('[POLL][SKIP][$source] previous request in-flight');
+      return;
+    }
+
+    _isReportRequestInFlight = true;
+    _pollTickCounter += 1;
+    debugPrint(
+      '[POLL][TICK][$source] #$_pollTickCounter at ${DateTime.now().toIso8601String()}',
+    );
+    try {
+      await _fetchAndStoreFinalReport(source: source, finalizeMeeting: false);
+    } finally {
+      _isReportRequestInFlight = false;
+    }
+  }
+
+  Future<void> _fetchAndStoreFinalReport({
+    required String source,
+    bool finalizeMeeting = false,
+  }) async {
+    final reportUri = finalizeMeeting
+        ? AppEnv.endMeetingUri
+        : AppEnv.liveReportUri;
+
+    final String reportMode = finalizeMeeting ? 'final' : 'live';
+
+    debugPrint('[POLL][API][$source] POST $reportUri mode=$reportMode');
 
     setState(() {
-      attentionPercent = response['attentive_percent'];
+      // Avoid flashing a spinner on every live poll once a report is already visible.
+      if (finalizeMeeting || finalReportTimestamp == null) {
+        isFinalReportLoading = true;
+      }
+      finalReportError = null;
     });
-    // watchBuffer.clear();
-    // esenseBuffer.clear();
-    Fluttertoast.showToast(msg: "Predicting stopped");
 
-    if (response != null) {
-      showSuggestion(context, response["suggestion"], Imagebytes);
+    try {
+      final resp = await client.post(
+        reportUri,
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+        },
+        body: jsonEncode({'user_id': globals.Model}),
+      );
+
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        debugPrint('[POLL][API][$source] status=${resp.statusCode}');
+        throw Exception('Report request failed with status ${resp.statusCode}');
+      }
+
+      final response = jsonDecode(resp.body);
+      final dynamic rawPercent = response['attentive_percent'];
+      final double? parsedPercent = (rawPercent is num)
+          ? rawPercent.toDouble()
+          : double.tryParse(rawPercent?.toString() ?? '');
+      final String suggestion = (response['suggestion'] ?? '').toString();
+      final String graphRaw = (response['graph'] ?? '').toString();
+
+      Uint8List? imageBytes;
+      if (graphRaw.isNotEmpty) {
+        final String base64String = graphRaw.contains(',')
+            ? graphRaw.split(',').last
+            : graphRaw;
+        imageBytes = base64Decode(base64String);
+      }
+
+      setState(() {
+        attentionPercent = parsedPercent;
+        finalSuggestion = suggestion.isEmpty ? null : suggestion;
+        finalReportGraphBytes = imageBytes;
+        finalReportTimestamp = DateTime.now();
+        isFinalReportLoading = false;
+      });
+
+      debugPrint(
+        '[POLL][API][$source] success at ${finalReportTimestamp?.toIso8601String()} '
+        'mode=$reportMode',
+      );
+    } catch (e) {
+      setState(() {
+        isFinalReportLoading = false;
+        finalReportError = e.toString();
+      });
+      debugPrint('[POLL][API][$source] error=$e');
     }
   }
 
-  void toggleStart() {
-    if (isPredicting == false) {
-      isPredicting = true;
-      onStart();
-    } else if (isPredicting == true) {
+
+  Future<void> toggleStart() async {
+    if (!isPredicting) {
+      debugPrint('[PREDICT][TOGGLE] Start requested');
+      final selectedInterval = await _askReportIntervalMinutes();
+      if (selectedInterval == null) {
+        debugPrint('[PREDICT][TOGGLE] Start cancelled');
+        return;
+      }
+      setState(() {
+        reportRefreshMinutes = selectedInterval;
+        isPredicting = true;
+        finalSuggestion = null;
+        finalReportGraphBytes = null;
+        finalReportTimestamp = null;
+        finalReportError = null;
+      });
+      debugPrint(
+        '[PREDICT][TOGGLE] Start confirmed with interval=${reportRefreshMinutes}m',
+      );
+      await onStart();
+      return;
+    }
+
+    debugPrint('[PREDICT][TOGGLE] Stop requested');
+    setState(() {
       isPredicting = false;
-      onStopPredicting();
-    }
+    });
+    await onStopPredicting();
   }
 
-  void onStart() async {
+  Future<void> onStart() async {
+    _stopReportPolling(reason: 'new start request');
     Fluttertoast.showToast(msg: "Prediction started");
 
-    print("BUFFERS TO BE STARTED BEING FILLED");
+    debugPrint("BUFFERS TO BE STARTED BEING FILLED");
     predictedProbabilities = null;
     initIMU();
     try {
-          final resp = await client.post(
-            Uri.parse("http://10.6.0.56:8888/start_meeting"),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'user_id': globals.Model
-            }),
-          );
-          print("[SENT] ${nativeAttentionStatus} → ${resp.statusCode}");
-        } catch (e, st) {
-          print("❌ post failed: $e\n$st");
-        }
-
+      debugPrint('[PREDICT][START] POST ${AppEnv.startMeetingUri}');
+      final resp = await client.post(
+        AppEnv.startMeetingUri,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'user_id': globals.Model}),
+      );
+      debugPrint('[PREDICT][START] status=${resp.statusCode}');
+      if (resp.statusCode >= 200 && resp.statusCode < 300) {
+        debugPrint(
+          '[PREDICT][START] start_meeting success. Starting poller now.',
+        );
+        _startPeriodicFinalReportRefresh();
+      } else {
+        debugPrint(
+          '[PREDICT][START] start_meeting non-2xx. Poller not started.',
+        );
+      }
+    } catch (e, st) {
+      debugPrint('[PREDICT][START] failed=$e');
+      debugPrint('$st');
+    }
   }
 
   void initIMU() {
@@ -616,6 +877,7 @@ class _RecogState extends State<Recog> {
     });
   }
 
+  // ignore: unused_element
   Future<void> showSuggestion(
     BuildContext context,
     String message,
@@ -630,78 +892,97 @@ class _RecogState extends State<Recog> {
       pageBuilder: (ctx, anim1, anim2) => Center(
         child: SingleChildScrollView(
           child: Dialog(
-            insetPadding: const EdgeInsets.all(5),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: ConstrainedBox(
+            backgroundColor: Colors.transparent,
+            insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            child: Container(
               constraints: BoxConstraints(
-                maxWidth: MediaQuery.of(ctx).size.width - 20,
-                maxHeight: MediaQuery.of(ctx).size.height - 100,
+                maxWidth: MediaQuery.of(ctx).size.width - 24,
+                maxHeight: MediaQuery.of(ctx).size.height - 80,
+              ),
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF10182B), Color(0xFF0C1224)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.white12),
+                boxShadow: const [
+                  BoxShadow(color: Colors.black54, blurRadius: 30, offset: Offset(0, 18), spreadRadius: -16),
+                  BoxShadow(color: Color(0x445CA9FF), blurRadius: 18, offset: Offset(0, 12), spreadRadius: -10),
+                ],
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Top bar with close button
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.only(right: 4, top: 4),
-                    child: Align(
-                      alignment: Alignment.topRight,
-                      child: IconButton(
-                        icon: const Icon(Icons.close),
+                  Row(
+                    children: [
+                      const Icon(Icons.tips_and_updates, color: Colors.white70),
+                      const SizedBox(width: 10),
+                      const Text('Session Summary',
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0.2)),
+                      const Spacer(),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white70),
                         onPressed: () => Navigator.of(ctx).pop(),
                       ),
-                    ),
+                    ],
                   ),
-
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 12),
                   Container(
-                    padding: const EdgeInsets.all(16.0), // inner spacing
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
                     decoration: BoxDecoration(
-                      color: Colors.white, // background color
-                      border: Border.all(
-                        color: const Color.fromARGB(
-                            255, 242, 40, 195), // outline color
-                        width: 2.0, // outline thickness
-                      ),
-                      borderRadius: BorderRadius.circular(
-                          12), // circular corners (12px radius)
+                      color: const Color(0x225CA9FF),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.white24),
                     ),
                     child: Text(
-                      'Attention Percent: ${"$attentionPercent %" ?? "Nothing predicted"}',
-                      style: TextStyle(
-                          color: const Color.fromARGB(255, 242, 40, 195)),
+                      'Attention Percent: ${attentionPercent != null ? '$attentionPercent %' : 'Nothing predicted'}',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.w700, letterSpacing: 0.2),
                     ),
                   ),
-                  SizedBox(
-                    height: 20,
-                  ),
-
-                  // Your scrollable message
-                  Expanded(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: Column(
-                        children: [
-                          Text(
-                            "Suggestion: $message",
-                            style: const TextStyle(fontSize: 15),
-                          ),
-                          SizedBox(height: 8,),
-                          Image.memory(ImageBytes, fit: BoxFit.contain,)
-                        ],
-                      ),
+                  const SizedBox(height: 14),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: Colors.white10,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.white12),
+                    ),
+                    child: Text(
+                      'Suggestion: $message',
+                      style: const TextStyle(color: Colors.white, fontSize: 15, height: 1.4),
                     ),
                   ),
-                  
-
+                  const SizedBox(height: 14),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(14),
+                    child: Container(
+                      color: Colors.black,
+                      child: Image.memory(ImageBytes, fit: BoxFit.contain),
+                    ),
+                  ),
                   const SizedBox(height: 16),
-
-                  // Optional OK button
-                  TextButton(
-                    onPressed: () => Navigator.of(ctx).pop(),
-                    child: const Text('Close'),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        backgroundColor: const Color(0xFF5CA9FF),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                      ),
+                      onPressed: () => Navigator.of(ctx).pop(),
+                      child: const Text('Close', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                    ),
                   ),
                 ],
               ),
@@ -725,139 +1006,357 @@ class _RecogState extends State<Recog> {
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-        child: Column(
-      children: [
-        SizedBox(
-          height: 20,
+    const bgColor = Color(0xFF0A0F1F);
+    const textColor = Colors.white;
+    const skyBlue = Color(0xFF5CA9FF);
+
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Color(0xFF0A0F1F), Color(0xFF0E1326)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
         ),
-        Container(
-          padding: const EdgeInsets.all(16.0), // inner spacing
-          decoration: BoxDecoration(
-            color: Colors.white, // background color
-            border: Border.all(
-              color: Colors.purple, // outline color
-              width: 2.0, // outline thickness
-            ),
-            borderRadius:
-                BorderRadius.circular(12), // circular corners (12px radius)
-          ),
-          child: Column(
-            children: [
-              Text(
-                "Predicted (native model) : ${predictedLabel} ",
-                style: TextStyle(color: Colors.purple),
-              )
-            ],
-          ),
-        ),
-        SizedBox(
-          height: 20,
-        ),
-        Container(
-          padding: const EdgeInsets.all(16.0), // inner spacing
-          decoration: BoxDecoration(
-            color: Colors.white, // background color
-            border: Border.all(
-              color: const Color.fromARGB(255, 39, 98, 176), // outline color
-              width: 2.0, // outline thickness
-            ),
-            borderRadius:
-                BorderRadius.circular(12), // circular corners (12px radius)
-          ),
-          child: Column(
-            children: [
-              Text(
-                "Native Attention Status : ${nativeAttentionStatus}",
-                style:
-                    TextStyle(color: const Color.fromARGB(255, 39, 117, 176)),
-              )
-            ],
-          ),
-        ),
-        SizedBox(
-          height: 20,
-        ),
-        Container(
-          padding: const EdgeInsets.all(16.0), // inner spacing
-          decoration: BoxDecoration(
-            color: Colors.white, // background color
-            border: Border.all(
-              color: const Color.fromARGB(255, 242, 40, 195), // outline color
-              width: 2.0, // outline thickness
-            ),
-            borderRadius:
-                BorderRadius.circular(12), // circular corners (12px radius)
-          ),
-          child: Text(
-            'Attention Percent: ${"$attentionPercent %" ?? "Nothing predicted"}',
-            style: TextStyle(color: const Color.fromARGB(255, 242, 40, 195)),
-          ),
-        ),
-        SizedBox(
-          height: 20,
-        ),
-        Container(
-          height: MediaQuery.sizeOf(context).height * 0.3,
-          width: MediaQuery.sizeOf(context).width - 0.7,
-          decoration: BoxDecoration(border: Border.all()),
-          child: SingleChildScrollView(
-            child: Column(
-              children: [
-                Text("Probabilities: $predictedProbabilities"),
-                Text("Window Size: $lengthleft"),
-                const SizedBox(height: 20),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(
-                    maxHeight: 100,
-                    // the maximum height of your scrollable window
-                  ),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.grey),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    clipBehavior: Clip.hardEdge, // hide anything outside
-                    child: SingleChildScrollView(
-                      child: Column(
-                        children: [
-                          Text("Watch Data: ${ShowWatch.toString()}"),
-                          Text(
-                              "eSense Data: ${ShowEsense.toString() ?? 'No data'}"),
+      ),
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: SafeArea(
+          child: CustomScrollView(
+            physics: const BouncingScrollPhysics(),
+            slivers: [
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: const [
+                          Icon(Icons.insights_outlined, color: skyBlue, size: 28),
+                          SizedBox(width: 10),
+                          Text('Recognition Panel',
+                              style: TextStyle(
+                                  color: textColor,
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 0.3)),
                         ],
                       ),
-                    ),
+                      const SizedBox(height: 22),
+
+                      _RecogCard(
+                        child: Center(
+                          child: _metaRow(
+                            'Predicted (native model)',
+                            predictedLabel ?? '--',
+                            alignCenter: true,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _RecogCard(
+                              child: _metaRow(
+                                  'Native Attention Status', nativeAttentionStatus ?? '--'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: _RecogCard(
+                              child: _metaRow(
+                                  'Attention Percent',
+                                  attentionPercent != null ? '$attentionPercent %' : 'Nothing predicted'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _RecogCard(
+                              child: _metaRow('Window Size', '$lengthleft'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: _RecogCard(
+                              child: _metaRow('Latency Tolerance', '$kAlignmentThresholdMs ms'),
+                            ),
+                          ),
+                        ],
+                      ),
+
+                      const SizedBox(height: 12),
+                      _RecogCard(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('Probabilities',
+                                style: TextStyle(
+                                    color: Colors.white70,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 13)),
+                            const SizedBox(height: 6),
+                            Container(
+                              height: 120,
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.white10),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              padding: const EdgeInsets.all(10),
+                              child: SingleChildScrollView(
+                                child: Text(
+                                  predictedProbabilities?.toString() ?? '--',
+                                  style: const TextStyle(color: textColor),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 16),
+                      Center(
+                        child: _PrimaryActionButton(
+                          isActive: isPredicting,
+                          onPressed: () {
+                            toggleStart();
+                          },
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      _RecogCard(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Session Summary',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w700,
+                                fontSize: 16,
+                                letterSpacing: 0.2,
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
+                              decoration: BoxDecoration(
+                                color: const Color(0x225CA9FF),
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(color: Colors.white24),
+                              ),
+                              child: Text(
+                                'Attention Percent: ${attentionPercent != null ? '$attentionPercent %' : 'Nothing predicted'}',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 0.2,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: Colors.white10,
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(color: Colors.white12),
+                              ),
+                              child: Text(
+                                'Suggestion: ${finalSuggestion ?? 'Waiting for report...'}',
+                                style: const TextStyle(color: Colors.white, fontSize: 15, height: 1.4),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            if (isFinalReportLoading)
+                              const Center(
+                                child: Padding(
+                                  padding: EdgeInsets.symmetric(vertical: 16),
+                                  child: CircularProgressIndicator(strokeWidth: 2.2),
+                                ),
+                              ),
+                            if (finalReportError != null)
+                              Text(
+                                'Report Error: $finalReportError',
+                                style: const TextStyle(color: Color(0xFFFF9A9A)),
+                              ),
+                            if (finalReportGraphBytes != null) ...[
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(14),
+                                child: Container(
+                                  color: Colors.black,
+                                  child: Image.memory(finalReportGraphBytes!, fit: BoxFit.contain),
+                                ),
+                              ),
+                            ] else if (!isFinalReportLoading) ...[
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  border: Border.all(color: Colors.white12),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Text(
+                                  'No report graph available yet.',
+                                  style: TextStyle(color: Colors.white70),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      _RecogCard(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('Live Data',
+                                style: TextStyle(
+                                    color: Colors.white70,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 13)),
+                            const SizedBox(height: 6),
+                            Container(
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.white10),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              padding: const EdgeInsets.all(10),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('Watch: ${ShowWatch.toString()}',
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(color: textColor)),
+                                  const SizedBox(height: 6),
+                                  Text('eSense: ${ShowEsense?.toString() ?? 'No data'}',
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(color: textColor)),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            _metaRow('Current Time', CurrentTime?.toIso8601String() ?? '--'),
+                            const SizedBox(height: 6),
+                            _metaRow('Model Name', globals.Model ?? '--'),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                Text("Latency Tolerance: $kAlignmentThresholdMs"),
-                Text("Current Time: ${CurrentTime}"),
-                Text("Model Name: ${globals.Model}"),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RecogCard extends StatelessWidget {
+  const _RecogCard({Key? key, required this.child}) : super(key: key);
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF10182B), Color(0xFF0C1224)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white12),
+        boxShadow: const [
+          BoxShadow(color: Colors.black54, blurRadius: 22, offset: Offset(0, 14), spreadRadius: -12),
+          BoxShadow(color: Color(0x445CA9FF), blurRadius: 14, offset: Offset(0, 8), spreadRadius: -10),
+        ],
+      ),
+      child: child,
+    );
+  }
+}
+
+Widget _metaRow(String label, String value, {bool alignCenter = false}) {
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(label,
+          style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
+      const SizedBox(height: 4),
+      Text(
+        value,
+        maxLines: 3,
+        overflow: TextOverflow.ellipsis,
+        textAlign: alignCenter ? TextAlign.center : TextAlign.start,
+        style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700),
+      ),
+    ],
+  );
+}
+
+class _PrimaryActionButton extends StatelessWidget {
+  const _PrimaryActionButton({Key? key, required this.isActive, required this.onPressed}) : super(key: key);
+
+  final bool isActive;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final List<Color> colors = isActive
+        ? [const Color(0xFFF06969), const Color(0xFFC73636)]
+        : [const Color(0xFF69F079), const Color(0xFF36C978)];
+
+    return SizedBox(
+      width: 160,
+      height: 56,
+      child: ElevatedButton(
+        style: ElevatedButton.styleFrom(
+          padding: EdgeInsets.zero,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          elevation: 0,
+          backgroundColor: Colors.transparent,
+          shadowColor: Colors.transparent,
+        ),
+        onPressed: onPressed,
+        child: Ink(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(colors: colors, begin: Alignment.topLeft, end: Alignment.bottomRight),
+            borderRadius: BorderRadius.circular(18),
+            boxShadow: const [
+              BoxShadow(color: Color(0x885CA9FF), blurRadius: 12, offset: Offset(0, 8), spreadRadius: -4),
+            ],
+          ),
+          child: Center(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(isActive ? Icons.stop_rounded : Icons.play_arrow_rounded,
+                    color: Colors.white, size: 22),
+                const SizedBox(width: 8),
+                Text(isActive ? 'Stop' : 'Start',
+                    style: const TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.w700, letterSpacing: 0.3, fontSize: 15)),
               ],
             ),
           ),
         ),
-        SizedBox(
-          height: 40,
-        ),
-        ElevatedButton(
-          onPressed: toggleStart,
-          child: isPredicting
-              ? Text(
-                  "Stop",
-                  style: TextStyle(
-                    color: Colors.white,
-                  ),
-                )
-              : Text("Start", style: TextStyle(color: Colors.white)),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: isPredicting
-                ? Color.fromARGB(255, 240, 105, 105)
-                : Color.fromARGB(255, 77, 221, 94),
-            shape: const CircleBorder(),
-            padding: const EdgeInsets.all(50),
-          ),
-        ),
-      ],
-    ));
+      ),
+    );
   }
 }
+
+

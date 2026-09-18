@@ -63,50 +63,79 @@ class _MyAppState extends State<MyApp> {
 
   @override
   Widget build(BuildContext context) {
+    const bgColor = Color(0xFF0A0F1F); // midnight blue
+    const textColor = Colors.white;
+    final theme = ThemeData(
+      brightness: Brightness.dark,
+      scaffoldBackgroundColor: bgColor,
+      colorScheme: const ColorScheme.dark(
+        background: bgColor,
+        surface: bgColor,
+        primary: Colors.black,
+        secondary: Colors.white,
+      ),
+      textTheme: ThemeData.dark().textTheme.apply(
+            bodyColor: textColor,
+            displayColor: textColor,
+          ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          foregroundColor: textColor,
+          backgroundColor: Colors.black,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        ),
+      ),
+      iconTheme: const IconThemeData(color: textColor),
+    );
+
     final home = Scaffold(
+      backgroundColor: bgColor,
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16),
           child: SafeArea(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text('Supported: $_supported'),
-                Text('Paired: $_paired'),
-                Text('Reachable: $_reachable'),
-                Text('Context: $_context'),
-                Text('Received contexts: $_receivedContexts'),
-                TextButton(
-                  onPressed: initPlatformState,
-                  child: const Text('Refresh'),
-                ),
-                const SizedBox(height: 8),
-                const Text('Send'),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    TextButton(
-                      onPressed: sendMessage,
-                      child: const Text('Message'),
-                    ),
-                    const SizedBox(width: 8),
-                    TextButton(
-                      onPressed: sendContext,
-                      child: const Text('Context'),
-                    ),
-                  ],
-                ),
-                TextButton(
-                  onPressed: toggleBackgroundMessaging,
-                  child: Text(
-                    '${timer == null ? 'Start' : 'Stop'} background messaging',
-                    textAlign: TextAlign.center,
+            child: DefaultTextStyle(
+              style: const TextStyle(color: textColor),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text('Supported: $_supported'),
+                  Text('Paired: $_paired'),
+                  Text('Reachable: $_reachable'),
+                  Text('Context: $_context'),
+                  Text('Received contexts: $_receivedContexts'),
+                  TextButton(
+                    onPressed: initPlatformState,
+                    child: const Text('Refresh'),
                   ),
-                ),
-                const SizedBox(width: 16),
-                const Text('Log'),
-                ..._log.reversed.map(Text.new),
-              ],
+                  const SizedBox(height: 8),
+                  const Text('Send'),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      TextButton(
+                        onPressed: sendMessage,
+                        child: const Text('Message'),
+                      ),
+                      const SizedBox(width: 8),
+                      TextButton(
+                        onPressed: sendContext,
+                        child: const Text('Context'),
+                      ),
+                    ],
+                  ),
+                  TextButton(
+                    onPressed: toggleBackgroundMessaging,
+                    child: Text(
+                      '${timer == null ? 'Start' : 'Stop'} background messaging',
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  const Text('Log'),
+                  ..._log.reversed.map(Text.new),
+                ],
+              ),
             ),
           ),
         ),
@@ -114,12 +143,13 @@ class _MyAppState extends State<MyApp> {
     );
 
     return MaterialApp(
+      theme: theme,
       home: isWear
           ? AmbientMode(
               builder: (context, mode, child) => child!,
-              child: home,
+              child: Theme(data: theme, child: home),
             )
-          : home,
+          : Theme(data: theme, child: home),
     );
   }
 
